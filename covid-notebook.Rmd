@@ -129,24 +129,12 @@ cat('\n\n')
 ### logarithmic {.tabset}
 
 ```{r results='asis'}
-p.list <- list()
-
-for(name in names(state.time.longer)){
-    df <- state.time.longer[[name]]
-    p.list[[name]] <- ggplot(df, aes(x=date, y=value,
-                                     group=Province_State, color=Province_State)) +
-                            geom_line() + theme_bw() +
-                            scale_y_log10() +
-                            theme(panel.grid.major=element_blank(),
-                                  panel.grid.minor=element_blank())
-}
-
 cat('#### confirmed\n')
-ggplotly(p.list[['confirmed']])
+ggplotly(p.list[['confirmed']] + scale_y_log10())
 cat('\n\n')
 
 cat('#### deaths\n')
-ggplotly(p.list[['deaths']])
+ggplotly(p.list[['deaths']] + scale_y_log10())
 cat('\n\n')
 
 ```
