@@ -1,0 +1,409 @@
+---
+title: 'Covid data'
+output:
+    html_document:
+        code_folding: hide
+        toc: true
+        toc_float: true
+        toc_depth: 3
+---
+
+```{r global_options}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE,
+                      fig.width=10, fig.height=7)
+```
+
+```{r lib}
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(hexbin)
+library(plotly)
+```
+
+```{r data_location}
+# Location of data (git repo with JHU data)
+data.dir <- '~/workspace/r-stuff/COVID-19/csse_covid_19_data/csse_covid_19_time_series'
+
+# files to be used in this analysis
+file.list <- list(US=list(confirmed='time_series_covid19_confirmed_US.csv',
+                           deaths='time_series_covid19_deaths_US.csv'),
+                   Global=list(confirmed='time_series_covid19_confirmed_global.csv',
+                           deaths='time_series_covid19_deaths_global.csv'))
+
+# file name to get time stamp
+last.downloaded <- file.info(file.path(data.dir, file.list[[1]][[1]]))$ctime
+```
+
+The data used in this analysis was downloaded on: *`r last.downloaded`*
+
+This analysis was last run on: *`r Sys.Date()`*
+
+# Load data
+
+```{r read_data}
+data.list <- list()
+for(name in names(file.list)){
+    data.list[[name]] <- list()
+    for(type in names(file.list[[name]])){
+        data.list[[name]][[type]] <- read_csv(file.path(data.dir, 
+                                                        file.list[[name]][[type]]))
+    }
+}
+```
+
+```{r state_wide}
+# Here we add all the rows for a particular state
+state.time <- list()
+state.time.longer <- list()
+name <- 'US'
+for(type in names(data.list[[name]])){
+    df <- data.list[[name]][[type]]
+    state.time[[type]] <- df %>% 
+        group_by(Province_State) %>% 
+        select(contains('20')) %>% 
+        summarize_each(funs=sum)
+
+    state.time.longer[[type]] <- state.time[[type]] %>%
+        pivot_longer(cols=contains('20')) %>% 
+        mutate(date=as.Date(name, format='%m/%d/%y'))
+
+}
+```
+
+```{r province_data}
+# Here we get the total deaths/cases for any province
+# For this we take the last column from the original data
+state.total <- list()
+for(name in names(data.list)){
+    state.total[[name]] <- tibble()
+    for(type in names(data.list[[name]])){
+        df <- data.list[[name]][[type]]
+        # last column has the total
+        total <- df[,dim(df)[2]]
+
+        df2 <- df %>% select(-contains('20'))
+        if(nrow(state.total[[name]]) == 0){
+            state.total[[name]] <- df2
+        } else {
+            cols.to.add <- names(df2)[!names(df2) %in% names(state.total[[name]])]
+            state.total[[name]] <- bind_cols(state.total[[name]],
+                                           df2 %>% select(all_of(cols.to.add)))
+        }
+        state.total[[name]][,type] <- total
+    }
+}
+
+```
+
+# Statewise numbers
+
+## Plot all states {.tabset}
+
+### linear {.tabset}
+
+```{r results='asis'}
+p.list <- list()
+
+for(name in names(state.time.longer)){
+    df <- state.time.longer[[name]]
+    p.list[[name]] <- ggplot(df, aes(x=date, y=value,
+                                     group=Province_State, color=Province_State)) +
+                            geom_line() + theme_bw() + 
+                            theme(panel.grid.major=element_blank(),
+                                  panel.grid.minor=element_blank())
+}
+
+cat('#### confirmed\n')
+ggplotly(p.list[['confirmed']])
+cat('\n\n')
+
+cat('#### deaths\n')
+ggplotly(p.list[['deaths']])
+cat('\n\n')
+
+```
+
+### logarithmic {.tabset}
+
+```{r results='asis'}
+cat('#### confirmed\n')
+ggplotly(p.list[['confirmed']] + scale_y_log10())
+cat('\n\n')
+
+cat('#### deaths\n')
+ggplotly(p.list[['deaths']] + scale_y_log10())
+cat('\n\n')
+
+```
+
+## Death rate by day
+
+```{r}
+
+total.confirmed <- state.time[['confirmed']] %>%
+    select(-Province_State) %>% summarise_all(sum)
+total.deaths <- state.time[['deaths']] %>%
+    select(-Province_State) %>% summarise_all(sum)
+df <- data.frame(row.names=NULL,
+                 date=as.Date(names(total.confirmed), format='%m/%d/%y'),
+                 confirmed=t(total.confirmed),
+                 deaths=t(total.deaths),
+                 death.rate=t(total.deaths/total.confirmed))
+
+xmin <- which(df$confirmed > 1000)[1]
+xmax <- dim(df)[1]
+
+text_y <- paste('confirmed = ', df$confirmed, '; deaths = ', df$deaths)
+p <- ggplot(df, aes(date, death.rate)) + 
+    geom_point(aes(size=confirmed)) + geom_line(linetype='dotted') + theme_bw() +
+    theme(panel.grid.major=element_blank(),
+          panel.grid.minor=element_blank())
+ggplotly(p)
+
+```
+
+## Rate of increase by date {.tabset}
+
+```{r}
+increase.time <- list()
+for(name in names(state.time.longer)){
+    increase.time[[name]] <- state.time.longer[[name]] %>%
+        group_by(Province_State) %>%
+        mutate(next_day=lead(value)) %>%
+        mutate(increase=next_day - value) %>%
+        select(-next_day)
+}
+```
+
+### linear {.tabset}
+
+```{r results='asis'}
+p.list <- list()
+for(name in names(increase.time)){
+    p.list[[name]] <- increase.time[[name]] %>%
+        ggplot(aes(date, increase, color=Province_State)) +
+               geom_line() + theme_bw() +
+               theme(panel.grid.major=element_blank(),
+                     panel.grid.minor=element_blank())
+}
+
+cat('#### confirmed\n')
+ggplotly(p.list[['confirmed']])
+cat('\n\n')
+
+cat('#### deaths\n')
+ggplotly(p.list[['deaths']])
+cat('\n\n')
+```
+
+### logarithmic {.tabset}
+
+```{r results='asis'}
+cat('#### confirmed\n')
+ggplotly(p.list[['confirmed']] + scale_y_log10() + geom_smooth(se=FALSE))
+cat('\n\n')
+
+cat('#### deaths\n')
+ggplotly(p.list[['deaths']] + scale_y_log10())
+cat('\n\n')
+```
+
+## Selected states
+
+```{r states}
+states.to.plot <- c('Washington', 'New York', 'California', 
+                    'Michigan', 'Louisiana', 'Maryland')
+knitr::kable(data.frame(states.to.plot))
+```
+
+## Plot selected states {.tabset}
+
+### linear {.tabset}
+
+```{r time_plots_linear, results='asis'}
+p.list <- list()
+for(name in names(state.time.longer)){
+    df <- state.time.longer[[name]] %>% filter(Province_State %in% states.to.plot)
+    p.list[[name]] <- ggplot(df, aes(x=date, y=value,
+                                     group=Province_State, color=Province_State)) +
+                            geom_line() + theme_bw() + 
+                            theme(panel.grid.major=element_blank(),
+                                  panel.grid.minor=element_blank())
+}
+
+cat('#### confirmed\n')
+ggplotly(p.list[['confirmed']])
+cat('\n\n')
+cat('#### deaths\n')
+ggplotly(p.list[['deaths']])
+cat('\n\n')
+
+```
+
+### logarithmic {.tabset}
+
+```{r time_plots, results='asis'}
+
+cat('#### confirmed\n')
+ggplotly(p.list[['confirmed']] + scale_y_log10())
+cat('\n\n')
+cat('#### deaths\n')
+ggplotly(p.list[['deaths']] + scale_y_log10())
+cat('\n\n')
+```
+
+## Daily increase {.tabset}
+
+### linear {.tabset}
+
+```{r results='asis'}
+p.list <- list()
+for(name in names(increase.time)){
+    p.list[[name]] <- increase.time[[name]] %>%
+        filter(Province_State %in% states.to.plot) %>%
+        ggplot(aes(date, increase, color=Province_State)) +
+               geom_line() + theme_bw() +
+               theme(panel.grid.major=element_blank(),
+                     panel.grid.minor=element_blank())
+}
+
+cat('#### confirmed\n')
+ggplotly(p.list[['confirmed']])
+cat('\n\n')
+
+cat('#### deaths\n')
+ggplotly(p.list[['deaths']])
+cat('\n\n')
+```
+
+### logarithmic {.tabset}
+
+```{r results='asis'}
+cat('#### confirmed\n')
+ggplotly(p.list[['confirmed']] + scale_y_log10())
+cat('\n\n')
+
+cat('#### deaths\n')
+ggplotly(p.list[['deaths']] + scale_y_log10())
+cat('\n\n')
+```
+
+## Total confirmed/deaths
+
+```{r}
+# NOTE: x-axis limits
+xmax <- -67
+xmin <- -125
+
+# NOTE: y-axis limits
+ymin <- 25
+ymax <- 50
+
+df <- state.total[['US']]
+
+top.by.state <- list(confirmed=df %>% group_by(Province_State) %>% top_n(1, confirmed),
+                     deaths=df %>% group_by(Province_State) %>% top_n(1, deaths))
+```
+
+### Plot counts as points {.tabset}
+
+```{r map_plots, results='asis'}
+type <- 'confirmed'
+color <- 'darkblue'
+p <- ggplot(df,  aes(x=Long_, y=Lat, size=log10(confirmed))) +
+    geom_point(alpha=0.2, color=color) + xlim(xmin, xmax) + ylim(ymin, ymax) + theme_bw() +
+    scale_size_continuous(breaks = c(0, 1, 2, 3),
+                          labels=10^(c(0, 1, 2, 3)),
+                          name = type) +
+    theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank())
+
+cat('#### ', type, '\n')
+ggplotly(p)
+cat('\n\n')
+
+type <- 'deaths'
+color <- 'darkred'
+p <- ggplot(df,  aes(x=Long_, y=Lat, size=log10(deaths))) +
+    geom_point(alpha=0.2, color=color) + xlim(xmin, xmax) + ylim(ymin, ymax) + theme_bw() +
+    scale_size_continuous(breaks = c(0, 1, 2, 3),
+                          labels=10^(c(0, 1, 2, 3)),
+                          name = type) +
+    theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank())
+
+cat('#### ', type, '\n')
+ggplotly(p)
+cat('\n\n')
+```
+
+## Density of cases {.tabset}
+
+Density of provinces with at least one case or death so far.
+
+```{r density_plots, results='asis'}
+p <- df %>% filter(confirmed > 0) %>%
+    ggplot(aes(x=Long_, y=Lat)) +
+    stat_density_2d(aes(fill=after_stat(level)), geom='polygon',  alpha=0.5) +
+    scale_fill_continuous(type='viridis') + 
+    geom_point(alpha=0.1) + xlim(xmin, xmax) + ylim(ymin, ymax) + theme_bw() +
+    scale_color_continuous(type='viridis') +
+    theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank())
+
+cat('### confirmed\n')
+p
+cat('\n\n')
+
+p <- df %>% filter(deaths > 0) %>%
+    ggplot(aes(x=Long_, y=Lat)) +
+    stat_density_2d(aes(fill=after_stat(level)), geom='polygon',  alpha=0.5) +
+    scale_fill_continuous(type='viridis') +
+    geom_point(alpha=0.1) + xlim(xmin, xmax) + ylim(ymin, ymax) + theme_bw() +
+    scale_color_continuous(type='viridis') +
+    theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank())
+
+cat('### deaths\n')
+p
+cat('\n\n')
+
+```
+
+## Summarized density of cases {.tabset}
+
+```{r summarized_density, results='asis'}
+df2 <- top.by.state[['confirmed']] %>% arrange(-confirmed)
+p <- ggplot(df, aes(x=Long_, y=Lat, z=confirmed)) +
+    stat_summary_hex(binwidth=0.5, alpha=0.5, 
+                     fun=function(x) log10(sum(x)), drop=TRUE) +
+    scale_fill_continuous(type='viridis', na.value='white') + 
+    xlim(xmin, xmax) + ylim(ymin, ymax) + theme_bw() +
+    theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank()) +
+    geom_point(data=df2[1:10,],
+               aes(Long_, Lat, text=Combined_Key), size=2, color='red', shape=5)
+
+cat('### confirmed\n')
+ggplotly(p, tooltip=c('z','text'))
+cat('\n\n')
+
+df2 <- top.by.state[['deaths']] %>% arrange(-deaths)
+p <- ggplot(df, aes(x=Long_, y=Lat, z=deaths)) +
+    stat_summary_hex(binwidth=0.5, alpha=0.5, 
+                     fun=function(x) log10(sum(x)), drop=TRUE) +
+    scale_fill_continuous(type='viridis', na.value='white') +
+    xlim(xmin, xmax) + ylim(ymin, ymax) + theme_bw() +
+    theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank()) +
+    geom_point(data=df2[1:10,],
+               aes(x=Long_, y=Lat, text=Combined_Key), size=2, color='red', shape=5)
+
+cat('### deaths\n')
+ggplotly(p, tooltip=c('z', 'text'))
+cat('\n\n')
+```
+
+
+# sessionInfo
+
+```{r collapse=FALSE}
+sessionInfo()
+```
