@@ -21,6 +21,7 @@ library(purrr)
 library(tidyr)
 library(hexbin)
 library(plotly)
+library(maps)
 ```
 
 ```{r data_location}
@@ -55,7 +56,6 @@ for(name in names(file.list)){
 ```{r state_wide}
 # Here we add all the rows for a particular state
 state.time <- list()
-state.time.longer <- list()
 name <- 'US'
 for(type in names(data.list[[name]])){
     df <- data.list[[name]][[type]]
@@ -64,33 +64,29 @@ for(type in names(data.list[[name]])){
         select(contains('20')) %>% 
         summarize_each(funs=sum)
 
-    state.time.longer[[type]] <- state.time[[type]] %>%
-        pivot_longer(cols=contains('20')) %>% 
-        mutate(date=as.Date(name, format='%m/%d/%y'))
-
 }
 ```
 
 ```{r province_data}
 # Here we get the total deaths/cases for any province
 # For this we take the last column from the original data
-state.total <- list()
+district.total <- list()
 for(name in names(data.list)){
-    state.total[[name]] <- tibble()
+    district.total[[name]] <- tibble()
     for(type in names(data.list[[name]])){
         df <- data.list[[name]][[type]]
         # last column has the total
         total <- df[,dim(df)[2]]
 
         df2 <- df %>% select(-contains('20'))
-        if(nrow(state.total[[name]]) == 0){
-            state.total[[name]] <- df2
+        if(nrow(district.total[[name]]) == 0){
+            district.total[[name]] <- df2
         } else {
-            cols.to.add <- names(df2)[!names(df2) %in% names(state.total[[name]])]
-            state.total[[name]] <- bind_cols(state.total[[name]],
+            cols.to.add <- names(df2)[!names(df2) %in% names(district.total[[name]])]
+            district.total[[name]] <- bind_cols(district.total[[name]],
                                            df2 %>% select(all_of(cols.to.add)))
         }
-        state.total[[name]][,type] <- total
+        district.total[[name]][,type] <- total
     }
 }
 
@@ -99,6 +95,9 @@ for(name in names(data.list)){
 # US data
 
 ## Death rate by day
+
+Here we plot the total death rate starting from where confirmed cases rose above
+1000.
 
 ```{r}
 
@@ -116,7 +115,7 @@ xmin <- which(df$confirmed > 1000)[1]
 xmax <- dim(df)[1]
 
 text_y <- paste('confirmed = ', df$confirmed, '; deaths = ', df$deaths)
-p <- ggplot(df, aes(date, death.rate)) + 
+p <- df  %>% filter(confirmed > 1000) %>% ggplot(aes(date, death.rate)) + 
     geom_point(aes(size=confirmed), alpha=0.7) + 
     geom_line(linetype='dotted', alpha=0.5) + theme_bw() +
     theme(panel.grid.major=element_blank(),
@@ -136,17 +135,19 @@ xmin <- -125
 ymin <- 25
 ymax <- 50
 
-df <- state.total[['US']]
+df <- district.total[['US']]
 
 top.by.state <- list(confirmed=df %>% group_by(Province_State) %>% top_n(1, confirmed),
                      deaths=df %>% group_by(Province_State) %>% top_n(1, deaths))
 ```
 
+<!--
 ### Density of cases {.tabset}
 
 Density of provinces with at least one confirmed case or death so far.
+-->
 
-```{r density_plots, results='asis'}
+```{r density_plots, results='asis', eval=FALSE}
 p <- df %>% filter(confirmed > 0) %>%
     ggplot(aes(x=Long_, y=Lat)) +
     stat_density_2d(aes(fill=after_stat(level)), geom='polygon',  alpha=0.5) +
@@ -173,37 +174,75 @@ cat('\n\n')
 
 ```
 
-### Total in each district {.tabset}
+<!--
+### Totals in each district (dots) {.tabset}
+-->
 
-```{r map_plots, results='asis'}
-df <- df %>% mutate(confirmed2 = log10(confirmed)) %>%
-    mutate(deaths2 = log10(deaths))
-cols <- list(confirmed2 = 'darkblue',
-             deaths2 = 'darkred')
+```{r map_plots, results='asis', eval=FALSE}
+df <- district.total[['US']]
+cols <- list('confirmed' = 'darkblue',
+             'deaths' = 'darkred')
 
 p.list <- list()
-for(type in c('confirmed2','deaths2')){
+for(type in c('confirmed','deaths')){
     p.list[[type]] <- ggplot(df,  aes_string(x='Long_', y='Lat', size=type)) +
         geom_point(alpha=0.2, color=cols[[type]]) + 
         xlim(xmin, xmax) + ylim(ymin, ymax) + theme_bw() +
-        scale_size_continuous(breaks = c(0, 1, 2, 3),
-                              labels=10^(c(0, 1, 2, 3)),
-                              name = type) +
+        scale_size_continuous(trans='log10',name = type) +
         theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank())
 }
 
 cat('#### confirmed\n')
-ggplotly(p.list[['confirmed2']])
+ggplotly(p.list[['confirmed']])
 cat('\n\n')
 cat('#### deaths\n')
-ggplotly(p.list[['deaths2']])
+ggplotly(p.list[['deaths']])
 cat('\n\n')
 
 ```
 
-### Summarized density of cases {.tabset}
+### Totals in each district {.tabset}
 
-```{r summarized_density, results='asis'}
+```{r map_plots_area, results='asis', cache=TRUE}
+counties <- map_data('county')
+
+# filter by counties in map data
+df2 <- district.total[['US']] %>%
+    mutate(Admin2=tolower(Admin2)) %>%
+    rename(subregion=Admin2) %>%
+    filter(subregion %in% unique(counties$subregion))
+
+# inner join by subregion
+df2.counties <- inner_join(counties, df2)
+
+cols <- list('confirmed' = 'Blues',
+             'deaths' = 'Reds')
+
+p.list <- list()
+for(type in c('confirmed','deaths')){
+    p.list[[type]] <- ggplot(df2.counties,
+                             aes_string(x='long', y='lat', fill=type, text=type, group='group')) +
+                        geom_polygon() +
+                        scale_fill_gradientn(trans='log10', na.value='white',
+                                             colors=RColorBrewer::brewer.pal(9, cols[[type]])) +
+                        theme_bw() + 
+                        theme(panel.grid.major=element_blank(),
+                              panel.grid.minor=element_blank())
+}
+
+cat('#### confirmed\n')
+ggplotly(p.list[['confirmed']], tooltip='text')
+cat('\n\n')
+cat('#### deaths\n')
+ggplotly(p.list[['deaths']], tooltip='text')
+cat('\n\n')
+```
+
+<!--
+### Summarized density of cases {.tabset}
+-->
+
+```{r summarized_density, results='asis', eval=FALSE}
 df2 <- top.by.state[['confirmed']] %>% arrange(-confirmed)
 p <- ggplot(df, aes(x=Long_, y=Lat, z=confirmed)) +
     stat_summary_hex(binwidth=0.5, alpha=0.5, 
@@ -236,13 +275,68 @@ cat('\n\n')
 
 ## State level
 
+### Total in each state {.tabset}
+
+```{r map_plot_state, results='asis'}
+usdata <- map_data('state')
+
+state.counts <- district.total[['US']] %>%
+    mutate(region=tolower(Province_State)) %>%
+    filter(region %in% unique(usdata$region)) %>%
+    group_by(region) %>%
+    select(confirmed, deaths) %>%
+    summarize_each(funs=sum)
+
+state.counts.coords <- inner_join(usdata, state.counts)
+#state.counts.coords <- state.counts.coords[order(state.counts.coords$order),]
+
+#state.counts.coords <- district.total[['US']] %>%
+#    group_by(Province_State) %>%
+#    select(Long_, Lat) %>%
+#    summarize_each(funs=mean) %>%
+#    bind_cols(state.counts %>% select(-Province_State)) %>%
+#    mutate(confirmed2 = log10(confirmed)) %>%
+#    mutate(deaths2 = log10(deaths))
+
+cols <- list(confirmed = 'Blues',
+             deaths = 'Reds')
+
+p.list <- list()
+for(type in c('confirmed','deaths')){
+    p.list[[type]] <- ggplot(state.counts.coords,
+                             aes_string(x='long', y='lat', fill=type, text=type, group='group')) +
+                        geom_polygon() +
+                        scale_fill_gradientn(trans='log10', na.value='white',
+                                             colors=RColorBrewer::brewer.pal(9, cols[[type]])) +
+                        theme_bw() + 
+                        theme(panel.grid.major=element_blank(),
+                              panel.grid.minor=element_blank())
+}
+
+cat('#### confirmed\n')
+ggplotly(p.list[['confirmed']], tooltip='text')
+cat('\n\n')
+cat('#### deaths\n')
+ggplotly(p.list[['deaths']], tooltip='text')
+cat('\n\n')
+
+```
 ### Total numbers by date {.tabset}
 
 ```{r results='asis'}
 p.list <- list()
 
-for(name in names(state.time.longer)){
-    df <- state.time.longer[[name]]
+state.time.longer <- list()
+for(name in names(state.time)){
+    df <- state.time[[name]]
+    # add total row
+    df2 <- df %>% summarize_if(is.numeric, sum)
+    df <- rbind(df, cbind(Province_State='total', df2)) %>%
+        pivot_longer(cols=contains('20')) %>% 
+        mutate(date=as.Date(name, format='%m/%d/%y'))
+
+    state.time.longer[[name]] <- df
+
     p.list[[name]] <- ggplot(df, aes(x=date, y=value,
                                      group=Province_State, color=Province_State)) +
                             geom_line() + theme_bw() + 
@@ -311,7 +405,7 @@ cat('\n\n')
 ### Selected states
 
 ```{r states}
-states.to.plot <- c('Washington', 'New York', 'California', 
+states.to.plot <- c('total','Washington', 'New York', 'California', 
                     'Michigan', 'Louisiana', 'Maryland')
 knitr::kable(data.frame(states.to.plot))
 ```
