@@ -25,8 +25,9 @@ library(maps)
 ```
 
 ```{r data_location}
-# Location of data (git repo with JHU data)
-data.dir <- '~/workspace/r-stuff/COVID-19/csse_covid_19_data/csse_covid_19_time_series'
+# Location of data (symlinked to git repo with JHU data)
+# link: data -> COVID-19/csse_covid_19_data/csse_covid_19_time_series
+data.dir <- 'data'
 
 # files to be used in this analysis
 file.list <- list(US=list(confirmed='time_series_covid19_confirmed_US.csv',
@@ -203,7 +204,7 @@ cat('\n\n')
 
 ### Totals in each district {.tabset}
 
-```{r map_plots_area, results='asis', cache=TRUE}
+```{r map_plots_area, results='asis'}
 counties <- map_data('county')
 
 # filter by counties in map data
